@@ -1,0 +1,145 @@
+name: JIRA Release Integration
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  update-jira-on-release:
+    name: Update JIRA Issues on Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Release Info
+        id: release
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            TAG_NAME="${{ github.event.release.tag_name }}"
+            RELEASE_NAME="${{ github.event.release.name }}"
+            RELEASE_URL="${{ github.event.release.html_url }}"
+          else
+            TAG_NAME="${{ github.ref_name }}"
+            RELEASE_NAME="$TAG_NAME"
+            RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/$TAG_NAME"
+          fi
+
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+          echo "url=$RELEASE_URL" >> $GITHUB_OUTPUT
+
+      - name: Extract JIRA Issues from Commits
+        id: extract_issues
+        run: |
+          # Get commits since last tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s")
+          else
+            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%s")
+          fi
+
+          # Extract unique JIRA keys
+          JIRA_KEYS=$(echo "$COMMITS" | grep -oE 'MOA-[0-9]+' | sort -u | tr '\n' ' ')
+
+          echo "jira_keys=$JIRA_KEYS" >> $GITHUB_OUTPUT
+          echo "Found JIRA issues: $JIRA_KEYS"
+
+      - name: Transition Issues to Done
+        if: steps.extract_issues.outputs.jira_keys != ''
+        run: |
+          JIRA_KEYS="${{ steps.extract_issues.outputs.jira_keys }}"
+
+          for ISSUE in $JIRA_KEYS; do
+            echo "Transitioning $ISSUE to Done..."
+
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              "https://gjrjr4545.atlassian.net/rest/api/3/issue/${ISSUE}/transitions" \
+              -d '{
+                "transition": {"name": "Done"},
+                "update": {
+                  "comment": [{
+                    "add": {
+                      "body": "Released in ${{ steps.release.outputs.name }}\n\nRelease: ${{ steps.release.outputs.url }}\nTag: ${{ steps.release.outputs.tag }}\nDate: '"$(date -u +"%Y-%m-%d %H:%M:%S UTC")"'"
+                    }
+                  }]
+                }
+              }' || echo "Failed to transition $ISSUE"
+          done
+
+      - name: Create JIRA Release Version
+        run: |
+          VERSION_NAME="${{ steps.release.outputs.tag }}"
+
+          # Create version in JIRA
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            "https://gjrjr4545.atlassian.net/rest/api/3/version" \
+            -d '{
+              "name": "'"$VERSION_NAME"'",
+              "description": "Release '"$VERSION_NAME"' - '"${{ steps.release.outputs.name }}"'",
+              "project": "MOA",
+              "releaseDate": "'"$(date +%Y-%m-%d)"'",
+              "released": true
+            }' || echo "Version may already exist"
+
+      - name: Link Issues to Release Version
+        if: steps.extract_issues.outputs.jira_keys != ''
+        run: |
+          VERSION_NAME="${{ steps.release.outputs.tag }}"
+          JIRA_KEYS="${{ steps.extract_issues.outputs.jira_keys }}"
+
+          for ISSUE in $JIRA_KEYS; do
+            echo "Linking $ISSUE to version $VERSION_NAME..."
+
+            curl -X PUT \
+              -H "Content-Type: application/json" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              "https://gjrjr4545.atlassian.net/rest/api/3/issue/${ISSUE}" \
+              -d '{
+                "fields": {
+                  "fixVersions": [{"name": "'"$VERSION_NAME"'"}]
+                }
+              }' || echo "Failed to link $ISSUE to version"
+          done
+
+      - name: Generate Release Notes for JIRA
+        if: steps.extract_issues.outputs.jira_keys != ''
+        run: |
+          JIRA_KEYS="${{ steps.extract_issues.outputs.jira_keys }}"
+          RELEASE_NOTES="Release Notes for ${{ steps.release.outputs.name }}\n\n"
+          RELEASE_NOTES+="Resolved Issues:\n"
+
+          for ISSUE in $JIRA_KEYS; do
+            # Get issue details
+            ISSUE_DATA=$(curl -s -X GET \
+              -H "Content-Type: application/json" \
+              -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+              "https://gjrjr4545.atlassian.net/rest/api/3/issue/${ISSUE}?fields=summary,issuetype")
+
+            SUMMARY=$(echo "$ISSUE_DATA" | jq -r '.fields.summary // "N/A"')
+            TYPE=$(echo "$ISSUE_DATA" | jq -r '.fields.issuetype.name // "N/A"')
+
+            RELEASE_NOTES+="- [$ISSUE] ($TYPE) $SUMMARY\n"
+          done
+
+          echo -e "$RELEASE_NOTES"
+          echo "$RELEASE_NOTES" > release_notes.txt
+
+      - name: Upload Release Notes
+        if: steps.extract_issues.outputs.jira_keys != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: jira-release-notes
+          path: release_notes.txt

@@ -4,9 +4,9 @@
 **프로젝트명:** MOAO11y  
 **베이스 언어:** Java 11 + Spring Boot + Gradle  
 **목적:**
-- Spring Actuator, PM2, Exporter(OS, RabbitMQ, MySQL)로 시스템 및 애플리케이션 메트릭 수집
+- Spring Actuator, PM2, Exporter(OS, RabbitMQ, MySQL)를 이용하여 시스템 및 애플리케이션 매트릭 수집
 - 수집된 데이터를 MOAServer로 전송 및 저장
-- 모든 설정은 `application.yml`에서 관리하며 환경(`dev`, `stg`, `live`)에 따라 분리
+- 모든 설정은 `application.yml` 에서 관리하며 환경(`dev`, `stg`, `live`)에 따라 분리
 - RabbitMQ 또는 Direct 전송 방식 중 선택 가능
 
 **레포지토리:** [https://github.com/bocopile/MOAO11y](https://github.com/bocopile/MOAO11y)  
@@ -15,6 +15,7 @@
 ---
 
 ## 📂 2. 프로젝트 구조
+
 ```
 .MOAO11y
 ├── docs/                 # 아키텍처 및 설계 문서
@@ -33,15 +34,22 @@
 - Gradle Version: 8.x (Groovy DSL)
 - Build Type: Multi-project build (`settings.gradle`, `build.gradle` 기반)
 
-### 🧩 공통
-- **MOAAgent**, **MOAServer**는 각각 독립적으로 빌드 가능 (`build.gradle`, `settings.gradle` 분리)
-- Gradle(Groovy DSL) 기반 **개별 빌드** 및 **전체 일괄 빌드** 지원
-- 모든 설정은 `application.yml`에 정의하며, 환경별 설정 파일(`application-dev.yml`, `application-stg.yml`, `application-live.yml`) 지원
+---
 
-**Gradle 빌드 예시**
+### 🧩 공통
+- **MOAAgent**, **MOAServer**는 각각 독립적으로 빌드될 수 있도록 `build.gradle`, `settings.gradle`을 분리 구성
+- Gradle(Groovy DSL) 기반으로 **개별 빌드** 또는 **전체 일괄 빌드** 모두 가능하도록 설정
+- 모든 설정은 `application.yml`에 정의하며, 환경(`dev`, `stg`, `live`)별로 분리된 설정 파일(`application-dev.yml`, `application-stg.yml`, `application-live.yml`)을 지원
+
+**Gradle 빌드 예시 (Groovy DSL / Java 11 환경)**
 ```bash
+# MOAAgent 개별 빌드
 ./gradlew :MOAAgent:build
+
+# MOAServer 개별 빌드
 ./gradlew :MOAServer:build
+
+# 전체 빌드 (루트 build.gradle에 buildAll 등록 시)
 ./gradlew buildAll
 ```
 
@@ -50,6 +58,131 @@
 rootProject.name = "MOAO11y"
 include("MOAAgent", "MOAServer")
 ```
+
+---
+
+### 🧠 MOAAgent
+- **Spring Actuator**, **PM2**, **Exporter(OS/RabbitMQ/MySQL)** 기반의 매트릭 수집
+- 각 항목별 **On/Off 설정** 가능 (예: `application.yml`의 `agent.collectors.*.enabled`)
+- **RabbitMQ** 또는 **Direct API 전송 방식** 중 하나 선택 가능
+- **수집 주기 및 전송 주기** 설정 가능 (`collect.interval`, `send.interval`)
+- **수집 실패 시 재시도 로직** 내장 (기본 3회, 5초 간격)
+
+**예시 플로우:**
+```
+[Exporter/Actuator] → [MOAAgent Collector] → (RabbitMQ | Direct API)
+→ [MOAServer Processor] → [Storage: CSV/MySQL]
+```
+
+---
+
+### 🖥️ MOAServer
+- MOAAgent로부터 수집된 데이터를 **수신 및 저장**
+- **저장 방식:** CSV / MySQL 중 선택 가능 (`storage.type`)
+- **데이터 보관 주기(`retention.period`)** 동적 변경 가능 (단위: 일, 핫리로드 지원)
+- **중복 데이터 정제**, **통계 집계 로직** 내장
+- MOAAgent와의 **설정 불일치 방지 로직** 포함 (버전/구성 검증)
+
+---
+
+### 📈 수집 계층
+| 계층 | 대상 | 목적 |
+|------|------|------|
+| Application Layer | Spring Actuator | 요청 수, 에러율, 스레드, GC |
+| System Layer | Node Exporter | CPU, Memory, Disk, Network |
+| MQ Layer | RabbitMQ Exporter | Queue, Consumer, Rate |
+| DB Layer | MySQL Exporter | 쿼리량, 연결 수, 느린 쿼리 |
+| Process Layer | PM2 | Uptime, Restart, Resource |
+| Container Layer | cAdvisor | CPU, Memory, Block I/O, Network, Restarts |
+
+**세부 지표 예시**
+#### Application (Actuator)
+- health.status, http.server.requests.count, jvm.memory.used, jvm.gc.pause
+
+#### System (Node Exporter)
+- node_cpu_seconds_total, node_memory_Active_bytes, node_load1
+
+#### RabbitMQ
+- rabbitmq_queue_messages_ready, rabbitmq_channel_consumers
+
+#### MySQL
+- mysql_global_status_questions, mysql_global_status_threads_connected
+
+#### PM2
+- pm2_process_uptime, pm2_process_memory, pm2_restart_count
+
+#### Container (cAdvisor)
+- container_cpu_usage_seconds_total, container_memory_usage_bytes, container_network_receive_bytes_total
+
+---
+
+### 🔍 Observability Policy 수정
+- 로그 포맷: JSON (timestamp, level, module, message, traceId)
+- 로그 수준: INFO(기본), DEBUG(개발), ERROR(운영)
+- Exporter 구성: Node Exporter, RabbitMQ Exporter, MySQL Exporter, cAdvisor
+- Prometheus endpoints:
+    - Spring Actuator 기반 애플리케이션: `/actuator/prometheus`
+    - Exporter(Node/RabbitMQ/MySQL/cAdvisor): `/metrics`
+- Tracing: OpenTelemetry + Jaeger
+- 로그 수집: Loki
+- 시각화: Grafana
+- Alert: Grafana AlertManager → Slack/Webhook
+
+---
+
+### ⚙️ PM2 관련 명시
+- **PM2**는 내장 메트릭 노출 또는 `pm2-io-apm` 기반 외부 연동 중 선택 가능
+- 외부 서비스 사용 시 **보안/의존성 주의** 필요
+
+---
+
+### 🔐 Gitignore 조정 예시
+```gitignore
+# 실제 비밀값이 담긴 환경 파일은 무시
+application-*.yml
+
+# 샘플은 버전관리
+!application-*.sample.yml
+```
+
+---
+
+### 📤 Agent → Server 전송 규격 (보강)
+- 전송 포맷: JSON (GZIP 압축)
+- Content-Type: application/json; charset=UTF-8
+- 인증 방식: API Key 또는 Token 기반
+- 재시도 정책: 최대 3회, 고정 5초 간격 (추후 지수 백오프 확장 가능)
+- Payload 크기 제한: 5MB 이하 (권장)
+- Schema Version 필드 포함 (`"schemaVersion": "1.0.0"`)
+
+---
+
+© 2025 bocopile — MOAO11y Observability Framework  
+(Java 11 / Gradle Groovy DSL 기반 빌드 환경 기준)
+
+
+### 🧠 MOAAgent
+- Spring Actuator, PM2, Exporter(OS/RabbitMQ/MySQL) 기반 매트릭 수집
+- 각 항목별 On/Off 설정 가능 (`application-agent.yml`)
+- RabbitMQ or Direct API 전송 중 하나만 선택 가능
+- 수집 주기 및 전송 주기 설정 가능
+- 수집 실패 시 재시도 로직 (기본 3회, 5초 간격)
+- 환경(`dev`, `stg`, `live`)별 분리된 설정 지원
+
+**예시 플로우:**
+```
+[Exporter/Actuator] → [MOAAgent Collector] → (RabbitMQ | Direct API)
+→ [MOAServer Processor] → [Storage: CSV/MySQL]
+```
+
+---
+
+### 🖥️ MOAServer
+- MOAAgent로부터 수집 데이터 수신 및 저장
+- 저장 방식: CSV / MySQL 중 선택 가능
+- 데이터 보관 주기(`retention.period`) 동적 변경 지원
+- 중복 데이터 정제 및 통계 집계 기능 포함
+- MOAAgent와 설정 불일치 방지 로직 내장
 
 ---
 
@@ -151,10 +284,186 @@ npx claude-code-templates@latest --skill=otel-trace-visualizer
 
 ---
 
-## ✅ Summary
-Claude Code + AITMPL 통합 환경에서 **MOAO11y Observability Framework**의 전체 아키텍처, 멀티 에이전트 구성, 메트릭 수집 정책, Git 관리 규칙, 설치 명령어를 포함합니다.
+## 🧭 5. MCP (Multi Code Platform) 설정
+- GitHub : https://github.com/bocopile/MOAO11y
+- JIRA : https://gjrjr4545.atlassian.net/jira/software/projects/MOA/
+- Slack Notification : Build/Deploy 시점별 알림
+
+---
+
+## 🔁 6. 작업 진행 절차
+
+### 1) 해야 할 일 분석
+- 작업 리스트 작성 → JIRA 백로그 등록
+- 각 작업 우선순위 지정
+
+### 2) 작업 시작
+- 백로그 상태: “해야 할 일” → “진행중”
+- `stg` 브랜치 기준 신규 브랜치 생성
+- 기능 완료 후 “테스트 진행 중” → Stage 병합
+
+### 3) 통합 테스트
+- `stage` 브랜치에서 전체 테스트 수행
+- 이상 없을 시 `main` 병합 PR 생성
+- 백로그 상태 "완료" 변경
+- 문제 발견 시 백로그 상태 “진행중”으로 회귀
+
+---
+
+## 🌿 7. Branch Naming Convention
+
+- `feature/{jira-key}-{short-desc}` → 신규 기능
+- `fix/{jira-key}-{short-desc}` → 버그 수정
+- `hotfix/{jira-key}-{short-desc}` → 긴급 수정
+- `docs/{short-desc}` → 문서 변경
+- `infra/{short-desc}` → 인프라 변경
+
+**머지 규칙:**
+- feature → stg → main 순으로 병합
+- Reviewer 2명 승인 필수
+- main은 항상 배포 가능한 상태 유지
+
+---
+
+## 📈 8. Metrics Collection Specification
+
+### 1️⃣ 수집 계층
+| 계층 | 대상 | 목적 |
+|------|------|------|
+| Application Layer | Spring Actuator | 요청 수, 에러율, 스레드, GC |
+| System Layer | Node Exporter | CPU, Memory, Disk, Network |
+| MQ Layer | RabbitMQ Exporter | Queue, Consumer, Rate |
+| DB Layer | MySQL Exporter | 쿼리량, 연결 수, 느린 쿼리 |
+| Process Layer | PM2 | Uptime, Restart, Resource |
+
+### 2️⃣ 세부 지표
+#### Application (Actuator)
+- health.status, http.server.requests.count, jvm.memory.used, jvm.gc.pause
+
+#### System (Node Exporter)
+- node_cpu_seconds_total, node_memory_Active_bytes, node_load1
+
+#### RabbitMQ
+- rabbitmq_queue_messages_ready, rabbitmq_channel_consumers
+
+#### MySQL
+- mysql_global_status_questions, mysql_global_status_threads_connected
+
+#### PM2
+- pm2_process_uptime, pm2_process_memory, pm2_restart_count
+
+### 3️⃣ 정책
+| 항목 | 기본값 | 설명 |
+|------|---------|------|
+| 수집 주기 | 30s | Exporter 데이터 수집 주기 |
+| 전송 주기 | 60s | Agent → Server 전송 |
+| 보관 기간 | 7일 | 데이터 보관 |
+| 압축 | GZIP | 전송 시 데이터 압축 |
+
+### 4️⃣ 확장 포인트
+- Redis, Kafka, Nginx, Custom Exporter 지원
+
+---
+
+## 🔍 9. Observability Policy
+
+- 로그 포맷: JSON (timestamp, level, module, message, traceId)
+- 로그 수준: INFO(기본), DEBUG(개발), ERROR(운영)
+- Exporter 구성:
+    - Node Exporter: OS metrics
+    - RabbitMQ Exporter: MQ metrics
+    - MySQL Exporter: DB metrics
+- Prometheus endpoint: `/metrics`
+- Tracing: OpenTelemetry + Jaeger
+- 로그 수집: Loki
+- 시각화: Grafana
+- Alert: Grafana AlertManager → Slack/Webhook
+
+---
+
+## 🧩 10. Gitignore 정책
+
+```gitignore
+# Java / Spring Boot
+*.class
+*.jar
+*.war
+hs_err_pid*
+*.log
+logs/
+spring.log
+
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+application-*.yml
+
+# Docker
+.docker/
+docker/tmp/
+docker/data/
+
+# Claude Code
+.claude/output/
+.claude/tmp/
+.claude/logs/
+*_generated.*
+
+# Build artifacts
+out/
+target/
+tmp/
+*.zip
+
+# Test Reports
+/reports/
+/coverage/
+/jacoco/
+
+# Infra / Terraform
+infra/.terraform/
+infra/terraform.tfstate*
+*.tfvars
+
+# NodeJS
+node_modules/
+
+# Data
+*.csv
+*.json
+*.db
+*.sql
+exported_data/
+collected_metrics/
+data/
+```
+
+---
+
+## ✅ 11. Summary
+
+이 문서는 Claude Code Multi-Agent 환경에서 **MOAO11y Observability Framework**의  
+전체 아키텍처, 에이전트 구조, 메트릭 정책, 브랜치 전략, 관찰 정책 및 Git 관리 규칙을 정의합니다.
 
 © 2025 bocopile — MOAO11y Observability Framework
+
 
 
 ## git commit 시
