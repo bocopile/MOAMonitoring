@@ -1,8 +1,0 @@
-{
-  "project_name": "MOAMonitoring",
-  "description": "Monitoring system for MOA (Multi-Objective Agent)",
-  "preferences": {
-    "defaultBranch": "main",
-    "codeStyle": "Java/Spring Boot"
-  }
-}
