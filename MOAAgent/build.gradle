@@ -1,0 +1,26 @@
+/*
+ * MOAAgent Build File
+ * 메트릭 수집 에이전트
+ */
+
+dependencies {
+    // Spring Boot Starters
+    implementation 'org.springframework.boot:spring-boot-starter-webflux' // 비동기 HTTP 클라이언트
+
+    // RabbitMQ (선택)
+    implementation 'org.springframework.boot:spring-boot-starter-amqp'
+
+    // Test
+    testImplementation 'org.testcontainers:testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'com.github.tomakehurst:wiremock-jre8:2.35.0'
+}
+
+bootJar {
+    archiveFileName = 'MOAAgent-' + project.version + '.jar'
+    mainClass = 'com.moao11y.agent.MOAAgentApplication'
+}
+
+test {
+    useJUnitPlatform()
+}

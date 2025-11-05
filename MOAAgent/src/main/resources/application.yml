@@ -1,0 +1,82 @@
+# MOAAgent Configuration
+
+spring:
+  application:
+    name: moaagent
+
+  profiles:
+    active: dev
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+moao11y:
+  agent:
+    collectors:
+      enabled: true
+      interval: 30  # seconds
+
+    sender:
+      type: direct  # rabbitmq | direct
+      retry:
+        max-attempts: 3
+        interval: 5000  # ms
+
+---
+# Dev Profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+logging:
+  level:
+    root: INFO
+    com.moao11y: DEBUG
+
+moao11y:
+  agent:
+    collectors:
+      interval: 60  # longer interval in dev
+
+---
+# Stg Profile
+spring:
+  config:
+    activate:
+      on-profile: stg
+
+logging:
+  level:
+    root: INFO
+    com.moao11y: INFO
+
+---
+# Live Profile
+spring:
+  config:
+    activate:
+      on-profile: live
+
+logging:
+  level:
+    root: WARN
+    com.moao11y: INFO
+
+moao11y:
+  agent:
+    collectors:
+      interval: 30

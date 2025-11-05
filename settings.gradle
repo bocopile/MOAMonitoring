@@ -1,0 +1,9 @@
+/*
+ * MOAO11y Multi-Project Settings
+ * Java 11 + Spring Boot + Gradle Groovy DSL
+ */
+
+rootProject.name = 'MOAO11y'
+
+include 'MOAAgent'
+include 'MOAServer'
